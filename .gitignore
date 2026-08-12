@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# eclipse-heatmap project
+.venv/
+data/*.bsp
+data/*.bsp.download
+*.bsp

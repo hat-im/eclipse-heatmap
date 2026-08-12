@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eclipse-heatmap"
+version = "0.1.0"
+description = "Global heat map of days until the next visible solar eclipse, computed from JPL DE440 ephemeris data."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26,<3",
+    "scipy>=1.11",
+    "pandas>=2.1",
+    "skyfield>=1.49",
+    "jplephem>=2.21",
+    "matplotlib>=3.8",
+    "cartopy>=0.22",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+# Accelerates the geometry classification hot loop; pure-NumPy fallback otherwise.
+numba = ["numba>=0.59"]
+# Enables GeoTIFF export; skipped with a warning otherwise.
+geotiff = ["rasterio>=1.3"]
+
+[project.scripts]
+eclipse-heatmap = "eclipse_heatmap.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
