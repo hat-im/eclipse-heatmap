@@ -8,7 +8,6 @@ from datetime import date, datetime
 from pathlib import Path
 
 DEFAULT_GRID_RESOLUTION_DEG: float = 0.25
-DEFAULT_MAGNITUDE_THRESHOLD: float = 0.01
 DEFAULT_TIME_STEP_SECONDS: float = 60.0
 DEFAULT_EPHEMERIS_FILENAME: str = "de440.bsp"
 DEFAULT_OUTPUT_DIR: Path = Path("output")
@@ -24,12 +23,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--resolution", type=float, default=DEFAULT_GRID_RESOLUTION_DEG, help="Grid spacing, in degrees.")
-    p.add_argument(
-        "--magnitude-threshold",
-        type=float,
-        default=DEFAULT_MAGNITUDE_THRESHOLD,
-        help="Minimum eclipse magnitude (fraction of solar diameter covered) to count as 'visible'.",
-    )
     p.add_argument(
         "--start-date",
         type=_parse_date,
@@ -97,21 +90,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "Each worker loads its own copy of the ephemeris once at startup.",
     )
     p.add_argument(
-        "--show-eclipse-paths",
+        "--fresh",
         action="store_true",
-        help="Draw a contour line on the PNG marking the '100%% line' -- the boundary of every region "
-        "where the first qualifying eclipse reaches magnitude 1.0 (total or annular). Derived from "
-        "already-computed data, no extra cost.",
-    )
-    p.add_argument(
-        "--color-by",
-        type=str,
-        choices=["eclipse_index", "days"],
-        default="eclipse_index",
-        help="What the PNG heat map's color axis encodes. 'eclipse_index' (default) colors "
-        "LINEARLY by which chronological eclipse event first covered each point (1st, 2nd, "
-        "3rd, ...), giving every eclipse equal visual weight regardless of the real-world gap "
-        "in time before it. 'days' reproduces the original log-scaled, time-based coloring.",
+        help="Ignore and clear any existing checkpoint in --output-dir, starting the search over "
+        "from --start-date. Default: automatically resume from the checkpoint if one is found.",
     )
     return p
 
