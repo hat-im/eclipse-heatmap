@@ -18,12 +18,6 @@ def to_raster(values_flat: np.ndarray, grid: GridSpec) -> np.ndarray:
     return np.flipud(raster)
 
 
-def to_raster_rgba(rgba_flat: np.ndarray, grid: GridSpec) -> np.ndarray:
-    """(N, 4) per-point RGBA array -> north-up (H, W, 4) raster."""
-    raster = rgba_flat.reshape(grid.shape + (4,))
-    return np.flipud(raster)
-
-
 def save_numpy(array2d: np.ndarray, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     np.save(path, array2d)
