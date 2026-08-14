@@ -1,4 +1,4 @@
-"""Workflow: load ephemeris -> build grid -> sweep eclipses -> save outputs after each one."""
+"""Workflow: load ephemeris -> build grid -> sweep eclipses -> blend + save outputs after each one."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from tqdm import tqdm
 from .models.eclipse_type import EclipseType
 from .models.grid import GridSpec, generate_grid
 from .rendering.heatmap import save_heatmap_png
-from .rendering.raster import save_geotiff, save_numpy, to_raster
+from .rendering.raster import save_geotiff, save_numpy, to_raster, to_raster_rgba
 from .rendering.table import build_results_dataframe, save_csv
 from .science.eclipses import iter_solar_eclipses
 from .science.visibility import VisibilityPool
@@ -24,15 +24,15 @@ from .utils.logging import setup_logging
 
 logger = logging.getLogger("eclipse_heatmap.pipeline")
 
-# Set by the SIGINT/SIGTERM handler; checked between eclipse events so a
-# stop lands after the current event finishes, not mid-computation.
 _stop_requested = False
+
+FIXED_MAX_INDEX_SCALE = 100
 
 
 def _request_stop(signum, frame) -> None:
     global _stop_requested
     if _stop_requested:
-        sys.exit(1)  # second signal: exit immediately
+        sys.exit(1)
     _stop_requested = True
     logger.warning("Stop requested (signal %d) -- finishing the current eclipse, then saving and exiting.", signum)
 
@@ -47,6 +47,19 @@ def load_ephemeris(data_dir: Path, filename: str):
     return loader(filename), loader.timescale()
 
 
+def _blend_over(accum_rgba: np.ndarray, event_rgb: np.ndarray, layer_alpha: np.ndarray) -> None:
+    """In-place Porter-Duff "over": event_rgb/layer_alpha composited on top of accum_rgba."""
+    accum_alpha = accum_rgba[:, 3]
+    new_alpha = layer_alpha + accum_alpha * (1.0 - layer_alpha)
+    denom = np.where(new_alpha > 1e-12, new_alpha, 1.0)
+    new_rgb = (
+        event_rgb[None, :] * layer_alpha[:, None]
+        + accum_rgba[:, :3] * accum_alpha[:, None] * (1.0 - layer_alpha[:, None])
+    ) / denom[:, None]
+    accum_rgba[:, :3] = new_rgb
+    accum_rgba[:, 3] = new_alpha
+
+
 def save_outputs(
     grid: GridSpec,
     days_until: np.ndarray,
@@ -54,29 +67,20 @@ def save_outputs(
     eclipse_type: np.ndarray,
     eclipse_magnitude: np.ndarray,
     eclipse_index: np.ndarray,
+    accum_rgba: np.ndarray,
+    processed_dates: list,
     output_dir: Path,
-    magnitude_threshold: float,
-    show_eclipse_paths: bool = False,
-    color_by: str = "eclipse_index",
 ) -> None:
-    """Write all four output files reflecting the current (possibly partial) results."""
+    """Write all output files reflecting the current (possibly partial) results."""
     df = build_results_dataframe(grid, days_until, eclipse_dates, eclipse_type, eclipse_magnitude, eclipse_index)
     raster_days = to_raster(days_until, grid)
-    raster_type = to_raster(eclipse_type, grid)
-    raster_index = to_raster(eclipse_index, grid)
+    raster_rgba = to_raster_rgba(accum_rgba, grid)
     output_dir.mkdir(parents=True, exist_ok=True)
     save_numpy(raster_days, output_dir / "days_until_next_eclipse.npy")
     save_geotiff(raster_days, grid, output_dir / "days_until_next_eclipse.tif")
     save_csv(df, output_dir / "days_until_next_eclipse.csv")
     save_heatmap_png(
-        raster_days,
-        grid,
-        output_dir / "days_until_next_eclipse.png",
-        magnitude_threshold=magnitude_threshold,
-        eclipse_type_raster=raster_type,
-        show_eclipse_paths=show_eclipse_paths,
-        eclipse_index_raster=raster_index,
-        color_by=color_by,
+        raster_rgba, grid, output_dir / "days_until_next_eclipse.png", FIXED_MAX_INDEX_SCALE, processed_dates
     )
 
 
@@ -108,12 +112,16 @@ def run(args: argparse.Namespace) -> None:
     eclipse_dates = np.full(n_points, None, dtype=object)
     eclipse_type = np.zeros(n_points, dtype=np.int8)
     eclipse_magnitude = np.zeros(n_points, dtype=np.float64)
-    # 1-based index, in processing order, of the event that first covered
-    # each point -- what the PNG colors by default. NaN until assigned.
     eclipse_index = np.full(n_points, np.nan, dtype=np.float64)
+    accum_rgba = np.zeros((n_points, 4), dtype=np.float64)
+    processed_dates: list = []
 
     lat_all = grid.lat_flat
     lon_all = grid.lon_flat
+
+    import matplotlib.pyplot as plt
+
+    cmap = plt.get_cmap("cividis")
 
     n_events_processed = 0
     stop_reason = "eclipse search exhausted"
@@ -127,22 +135,18 @@ def run(args: argparse.Namespace) -> None:
                 stop_reason = "stopped by user (signal)"
                 break
 
-            remaining_idx = np.where(~assigned)[0]
-            if remaining_idx.size == 0:
+            if assigned.all():
                 stop_reason = "full global coverage reached"
                 break
 
             max_mag, best_type = pool.compute(
-                event.search_start.tt,
-                event.search_end.tt,
-                lat_all[remaining_idx],
-                lon_all[remaining_idx],
-                args.time_step_seconds,
+                event.search_start.tt, event.search_end.tt, lat_all, lon_all, args.time_step_seconds
             )
             n_events_processed += 1
+            processed_dates.append(event.date)
 
-            hit_mask = max_mag >= args.magnitude_threshold
-            hit_idx = remaining_idx[hit_mask]
+            hit_mask = (~assigned) & (max_mag > 0.0)
+            hit_idx = np.where(hit_mask)[0]
             if hit_idx.size:
                 assigned[hit_idx] = True
                 days_until[hit_idx] = (event.date - today).days
@@ -151,19 +155,20 @@ def run(args: argparse.Namespace) -> None:
                 eclipse_magnitude[hit_idx] = max_mag[hit_mask]
                 eclipse_index[hit_idx] = n_events_processed
 
+            t = min(n_events_processed / FIXED_MAX_INDEX_SCALE, 1.0)
+            event_rgb = np.array(cmap(t)[:3])
+            layer_alpha = np.clip(max_mag, 0.0, 1.0)
+            _blend_over(accum_rgba, event_rgb, layer_alpha)
+
             log.info(
-                "%s (%s): %d/%d remaining points newly assigned; %d/%d total covered. Repainting outputs...",
+                "%s (%s): %d newly assigned a first eclipse; %d/%d total covered. Repainting outputs...",
                 event.date,
                 EclipseType.name(best_type[hit_mask].max()) if hit_idx.size else "none",
                 hit_idx.size,
-                remaining_idx.size,
                 int(assigned.sum()),
                 n_points,
             )
 
-            # Render after every eclipse, not just ones that assigned new
-            # points, so outputs on disk always reflect the most recently
-            # evaluated eclipse.
             save_outputs(
                 grid,
                 days_until,
@@ -171,14 +176,12 @@ def run(args: argparse.Namespace) -> None:
                 eclipse_type,
                 eclipse_magnitude,
                 eclipse_index,
+                accum_rgba,
+                processed_dates,
                 args.output_dir,
-                args.magnitude_threshold,
-                args.show_eclipse_paths,
-                args.color_by,
             )
 
         else:
-            # Loop exhausted without a break -- only possible when --end-date bounds the search.
             stop_reason = f"reached search end date {args.end_date}"
     finally:
         pool.close()
@@ -200,9 +203,8 @@ def run(args: argparse.Namespace) -> None:
         eclipse_type,
         eclipse_magnitude,
         eclipse_index,
+        accum_rgba,
+        processed_dates,
         args.output_dir,
-        args.magnitude_threshold,
-        args.show_eclipse_paths,
-        args.color_by,
     )
     log.info("Done. Outputs written to %s", args.output_dir.resolve())
