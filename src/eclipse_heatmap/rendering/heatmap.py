@@ -28,7 +28,7 @@ def save_heatmap_png(
     path: Path,
     processed_dates: list[date],
 ) -> None:
-    """Robinson-projection PNG from an already-blended (H, W, 4) RGBA raster.
+    """Equal Earth-projection PNG from an already-blended (H, W, 4) RGBA raster.
 
     Color is the Porter-Duff "over" composite of every eclipse touching each
     point so far, so overlap shows as a genuine color mix. The color scale
@@ -42,7 +42,7 @@ def save_heatmap_png(
     from matplotlib.colors import Normalize
 
     fig = plt.figure(figsize=(18, 10))
-    ax = plt.axes(projection=ccrs.Robinson())
+    ax = plt.axes(projection=ccrs.EqualEarth())
     ax.set_global()
     ax.set_facecolor("#bfbfbf")
 
@@ -59,12 +59,16 @@ def save_heatmap_png(
     ax.gridlines(draw_labels=False, linewidth=0.3, color="gray", alpha=0.5, linestyle=":")
 
     n_events = max(len(processed_dates), 1)
-    reference = ScalarMappable(norm=Normalize(vmin=1, vmax=n_events), cmap=plt.get_cmap("cividis"))
-    cbar = fig.colorbar(reference, ax=ax, orientation="horizontal", pad=0.05, shrink=0.6)
+    reference = ScalarMappable(norm=Normalize(vmin=1, vmax=n_events), cmap=plt.get_cmap("viridis"))
+
+    fig.canvas.draw()
+    map_pos = ax.get_position()
+    cax = fig.add_axes([map_pos.x0, map_pos.y0 - 0.08, map_pos.width, 0.03])
+    cbar = fig.colorbar(reference, cax=cax, orientation="horizontal")
     positions, labels = _date_ticks(processed_dates)
     if positions:
         cbar.set_ticks(positions)
-        cbar.set_ticklabels(labels, rotation=45, ha="right")
+        cbar.set_ticklabels(labels)
     cbar.ax.tick_params(length=4)
     cbar.set_label("Eclipse date")
 

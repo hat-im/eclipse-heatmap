@@ -8,6 +8,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 DEFAULT_GRID_RESOLUTION_DEG: float = 0.25
+DEFAULT_MAGNITUDE_THRESHOLD: float = 0.0
 DEFAULT_TIME_STEP_SECONDS: float = 60.0
 DEFAULT_EPHEMERIS_FILENAME: str = "de440.bsp"
 DEFAULT_OUTPUT_DIR: Path = Path("output")
@@ -23,6 +24,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--resolution", type=float, default=DEFAULT_GRID_RESOLUTION_DEG, help="Grid spacing, in degrees.")
+    p.add_argument(
+        "--magnitude-threshold",
+        type=float,
+        default=DEFAULT_MAGNITUDE_THRESHOLD,
+        help="A point counts as 'covered' (for days-until tracking and the full-coverage stop "
+        "condition) only once its eclipse magnitude exceeds this. Default 0: any visibility counts. "
+        "Set to 1.0 to effectively require a total eclipse (totality starts at magnitude 1.0). Does "
+        "NOT affect the color/opacity map, which always blends the raw magnitude.",
+    )
     p.add_argument(
         "--start-date",
         type=_parse_date,

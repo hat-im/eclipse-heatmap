@@ -222,3 +222,4 @@ __marimo__/
 data/*.bsp
 data/*.bsp.download
 *.bsp
+output/checkpoint/*.npz

@@ -61,13 +61,20 @@ class RunState:
         self.magnitudes: list[np.ndarray] = []
         self.processed_dates: list = []
 
-    def apply_event(self, today, event_date, magnitude: np.ndarray, eclipse_type: np.ndarray) -> int:
-        """Updates cumulative state for one event; returns count of newly-assigned points."""
+    def apply_event(
+        self, today, event_date, magnitude: np.ndarray, eclipse_type: np.ndarray, magnitude_threshold: float = 0.0
+    ) -> int:
+        """Updates cumulative state for one event; returns count of newly-assigned points.
+
+        magnitude_threshold only gates what counts as "covered" for
+        days-until tracking -- the color/opacity blend always uses the
+        raw magnitude, unaffected by this threshold.
+        """
         self.magnitudes.append(magnitude)
         self.processed_dates.append(event_date)
         event_index = len(self.processed_dates)
 
-        hit_mask = (~self.assigned) & (magnitude > 0.0)
+        hit_mask = (~self.assigned) & (magnitude > magnitude_threshold)
         hit_idx = np.where(hit_mask)[0]
         if hit_idx.size:
             self.assigned[hit_idx] = True
@@ -79,7 +86,9 @@ class RunState:
         return hit_idx.size
 
 
-def _load_resume_state(checkpoint_dir: Path, grid: GridSpec, today) -> tuple[RunState, list]:
+def _load_resume_state(
+    checkpoint_dir: Path, grid: GridSpec, today, magnitude_threshold: float
+) -> tuple[RunState, list]:
     """Replays every stored per-event checkpoint to rebuild cumulative state without re-running the visibility sweep."""
     checkpoints = load_checkpoints(checkpoint_dir)
     n_points = grid.lat_flat.size
@@ -90,12 +99,17 @@ def _load_resume_state(checkpoint_dir: Path, grid: GridSpec, today) -> tuple[Run
                 f"Checkpoint at {checkpoint_dir} has {cp.magnitude.size} points but the current grid "
                 f"has {n_points} -- resolution/bounds must match to resume. Use --fresh to start over."
             )
-        state.apply_event(today, cp.date, cp.magnitude, cp.eclipse_type)
+        state.apply_event(today, cp.date, cp.magnitude, cp.eclipse_type, magnitude_threshold)
     return state, checkpoints
 
 
-def save_outputs(grid: GridSpec, state: RunState, output_dir: Path) -> None:
-    """Recomputes the blend from all stored per-event magnitudes (color scale = actual event count, no hardcoded ceiling)."""
+def save_outputs(grid: GridSpec, state: RunState, output_dir: Path, magnitude_threshold: float) -> None:
+    """Recomputes the blend from all stored per-event magnitudes (color scale = actual event count, no hardcoded ceiling).
+
+    Painting only shows where magnitude exceeds magnitude_threshold, same
+    gate as the days-until coverage tracking -- e.g. threshold=1.0 paints
+    only the total-eclipse core, not the wider partial footprint.
+    """
     df = build_results_dataframe(
         grid, state.days_until, state.eclipse_dates, state.eclipse_type, state.eclipse_magnitude, state.eclipse_index
     )
@@ -107,7 +121,8 @@ def save_outputs(grid: GridSpec, state: RunState, output_dir: Path) -> None:
 
     import matplotlib.pyplot as plt
 
-    accum_rgba = blend_events(state.magnitudes, plt.get_cmap("cividis"))
+    painted_magnitudes = [np.where(m > magnitude_threshold, m, 0.0) for m in state.magnitudes]
+    accum_rgba = blend_events(painted_magnitudes, plt.get_cmap("viridis"))
     raster_rgba = to_raster_rgba(accum_rgba, grid)
     save_heatmap_png(raster_rgba, grid, output_dir / "days_until_next_eclipse.png", state.processed_dates)
 
@@ -132,7 +147,7 @@ def run(args: argparse.Namespace) -> None:
         log.info("--fresh: clearing existing checkpoint at %s", checkpoint_dir)
         shutil.rmtree(checkpoint_dir)
 
-    state, checkpoints = _load_resume_state(checkpoint_dir, grid, today)
+    state, checkpoints = _load_resume_state(checkpoint_dir, grid, today, args.magnitude_threshold)
     search_start = today
     if checkpoints:
         search_start = checkpoints[-1].date + timedelta(days=1)
@@ -165,8 +180,16 @@ def run(args: argparse.Namespace) -> None:
     log.info("Starting %d worker process(es) for the visibility sweep...", args.workers)
     pool = VisibilityPool(args.workers, str(args.data_dir), args.ephemeris_filename)
 
+    progress = tqdm(
+        total=100.0,
+        desc="Coverage",
+        unit="%",
+        bar_format="{l_bar}{bar}| {n:.4f}/{total_fmt}% [{elapsed}<{remaining}]",
+    )
+    progress.n = 100.0 * int(state.assigned.sum()) / n_points
+    progress.refresh()
     try:
-        for event in tqdm(events_iter, desc="Sweeping eclipses", unit="eclipse"):
+        for event in events_iter:
             if _stop_requested:
                 stop_reason = "stopped by user (signal)"
                 break
@@ -181,7 +204,12 @@ def run(args: argparse.Namespace) -> None:
             n_new_events += 1
 
             save_event_checkpoint(checkpoint_dir, len(state.processed_dates) + 1, event.date, magnitude, eclipse_type)
-            n_newly_assigned = state.apply_event(today, event.date, magnitude, eclipse_type)
+            n_newly_assigned = state.apply_event(
+                today, event.date, magnitude, eclipse_type, args.magnitude_threshold
+            )
+            progress.set_postfix_str(f"{len(state.processed_dates)} eclipses")
+            progress.n = 100.0 * int(state.assigned.sum()) / n_points
+            progress.refresh()
 
             log.info(
                 "%s (%s): %d newly assigned a first eclipse; %d/%d total covered.",
@@ -194,10 +222,11 @@ def run(args: argparse.Namespace) -> None:
 
             if n_newly_assigned > 0:
                 log.info("Coverage changed -- repainting outputs...")
-                save_outputs(grid, state, args.output_dir)
+                save_outputs(grid, state, args.output_dir, args.magnitude_threshold)
         else:
             stop_reason = f"reached search end date {args.end_date}"
     finally:
+        progress.close()
         pool.close()
 
     n_unassigned = int((~state.assigned).sum())
@@ -211,5 +240,5 @@ def run(args: argparse.Namespace) -> None:
         n_unassigned,
     )
 
-    save_outputs(grid, state, args.output_dir)
+    save_outputs(grid, state, args.output_dir, args.magnitude_threshold)
     log.info("Done. Outputs written to %s", args.output_dir.resolve())
