@@ -36,11 +36,12 @@ python main.py --resolution 2.0 --lat-bounds 60 68 --lon-bounds -25 -13 \
 ### CLI options
 
 | Flag | Default | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | `--resolution` | `0.25` | Grid spacing, degrees |
 | `--magnitude-threshold` | `0.01` | Minimum eclipse coverage (0–1) to count as "visible" |
-| `--start-date` | today | Search start date, `YYYY-MM-DD` |
+| `--start-date` | today | Search start date, `YYYY-MM-DD` (any integer year, `-` prefix for BCE) |
 | `--end-date` | none | Search end date; omit to run until full coverage or Ctrl+C |
+| `--ignore-full-coverage` | off | Keep searching through `--end-date` even after 100% coverage |
 | `--time-step-seconds` | `60` | Time resolution per eclipse window |
 | `--workers` | all cores | Worker processes; `1` disables multiprocessing |
 | `--data-dir` | `data/` | Ephemeris cache directory |
@@ -58,7 +59,7 @@ python main.py --resolution 2.0 --lat-bounds 60 68 --lon-bounds -25 -13 \
 Written to `--output-dir`:
 
 | File | Contents |
-|---|---|
+| --- | --- |
 | `days_until_next_eclipse.npy` | 2-D array, north-up, NaN = not covered yet |
 | `days_until_next_eclipse.tif` | Same data as GeoTIFF, EPSG:4326 |
 | `days_until_next_eclipse.csv` | One row per grid point: lat, lon, days, date, type, magnitude, eclipse rank |
@@ -66,14 +67,17 @@ Written to `--output-dir`:
 
 ## Layout
 
-```
+```text
 main.py                              thin main
 pyproject.toml                       package metadata
 src/eclipse_heatmap/
   cli.py                             argument parsing
-  pipeline.py                        workflow
+  data/                              checkpoint I/O, raster/CSV export
+  plots/                             all visualization: blending, main map, analysis plots + registry
+  logic/                             pipeline orchestration, run state
   models/                            data structures
   science/                           astronomy
-  rendering/                         output writers
   utils/                             helpers
+scripts/
+  generate_all_plots.py              runs the checkpoint-data analysis plots in one pass
 ```

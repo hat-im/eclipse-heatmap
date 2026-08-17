@@ -21,13 +21,13 @@ Algorithm:
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
 
 from scipy.optimize import minimize_scalar
 from skyfield import almanac
 from skyfield.timelib import Time, Timescale
 
 from ..models.eclipse_event import SolarEclipseEvent
+from ..utils.astro_date import AstroDate
 from .geometry import moon_angular_radius_deg, moon_horizontal_parallax_deg, sun_angular_radius_deg
 
 logger = logging.getLogger("eclipse_heatmap.eclipses")
@@ -105,9 +105,10 @@ def _evaluate_new_moon(eph, ts: Timescale, approx_t: Time) -> SolarEclipseEvent 
         return None
 
     search_start, search_end = _adaptive_window(eph, ts, refined_t, limit_deg)
+    year, month, day, *_ = refined_t.utc
     return SolarEclipseEvent(
         max_time=refined_t,
-        date=refined_t.utc_datetime().date(),
+        date=AstroDate(int(year), int(month), int(day)),
         separation_deg=separation,
         sun_radius_deg=sun_r,
         moon_radius_deg=moon_r,
@@ -120,8 +121,8 @@ def _evaluate_new_moon(eph, ts: Timescale, approx_t: Time) -> SolarEclipseEvent 
 def iter_solar_eclipses(
     eph,
     ts: Timescale,
-    start_date: date,
-    end_date: date | None = None,
+    start_date: AstroDate,
+    end_date: AstroDate | None = None,
     chunk_days: int = 366,
 ):
     """Yield confirmed solar eclipse events in chronological order, lazily.
@@ -137,7 +138,7 @@ def iter_solar_eclipses(
         if end_date is not None and chunk_start > end_date:
             return
 
-        chunk_end = chunk_start + timedelta(days=chunk_days)
+        chunk_end = chunk_start.add_days(chunk_days)
         if end_date is not None:
             chunk_end = min(chunk_end, end_date)
 
@@ -156,4 +157,4 @@ def iter_solar_eclipses(
 
         if end_date is not None and chunk_end >= end_date:
             return
-        chunk_start = chunk_end + timedelta(days=1)
+        chunk_start = chunk_end.add_days(1)

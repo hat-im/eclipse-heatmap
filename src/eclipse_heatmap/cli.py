@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import argparse
 import os
-from datetime import date, datetime
 from pathlib import Path
+
+from .utils.astro_date import AstroDate
 
 DEFAULT_GRID_RESOLUTION_DEG: float = 0.25
 DEFAULT_MAGNITUDE_THRESHOLD: float = 0.0
@@ -14,8 +15,8 @@ DEFAULT_EPHEMERIS_FILENAME: str = "de440.bsp"
 DEFAULT_OUTPUT_DIR: Path = Path("output")
 
 
-def _parse_date(s: str) -> date:
-    return datetime.strptime(s, "%Y-%m-%d").date()
+def _parse_date(s: str) -> AstroDate:
+    return AstroDate.parse(s)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -37,7 +38,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--start-date",
         type=_parse_date,
         default=None,
-        help="Search start date, YYYY-MM-DD. Defaults to today (UTC).",
+        help="Search start date, YYYY-MM-DD (any integer year, '-' prefix for BCE). Defaults to today (UTC).",
     )
     p.add_argument(
         "--end-date",
@@ -105,10 +106,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Ignore and clear any existing checkpoint in --output-dir, starting the search over "
         "from --start-date. Default: automatically resume from the checkpoint if one is found.",
     )
+    p.add_argument(
+        "--ignore-full-coverage",
+        action="store_true",
+        help="Keep searching for eclipses through --end-date even after every grid point has "
+        "already been assigned one. Default: stop as soon as full coverage is reached.",
+    )
     return p
 
 
 def main() -> None:
-    from .pipeline import run
+    from .logic.pipeline import run
 
     run(build_arg_parser().parse_args())

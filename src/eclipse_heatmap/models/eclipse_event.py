@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
 
 from skyfield.timelib import Time
+
+from ..utils.astro_date import AstroDate
 
 
 @dataclass(frozen=True)
@@ -20,7 +21,7 @@ class SolarEclipseEvent:
     """
 
     max_time: Time
-    date: date
+    date: AstroDate
     separation_deg: float
     sun_radius_deg: float
     moon_radius_deg: float
