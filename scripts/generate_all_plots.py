@@ -1,8 +1,4 @@
-"""Runs the checkpoint-data analysis plots (see eclipse_heatmap.plots), streaming checkpoints from disk per plot.
-
-Each plot streams the checkpoint files one at a time, so memory stays flat
-no matter how many thousands there are. Safe to run alongside a live
-main.py process still writing new checkpoints (read-only).
+"""Runs the checkpoint-data analysis plots, streaming from disk; read-only, safe alongside a live main.py.
 
 Usage: python scripts/generate_all_plots.py [checkpoint_dir] [output_dir] [--only NAME [NAME ...]]
 """

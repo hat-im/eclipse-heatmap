@@ -7,7 +7,7 @@ import logging
 import shutil
 import signal
 import sys
-from itertools import islice
+from itertools import chain, islice
 from pathlib import Path
 
 import numpy as np
@@ -29,7 +29,7 @@ from .run_state import CheckpointMerger, RunState
 
 logger = logging.getLogger("eclipse_heatmap.logic")
 
-ANALYSIS_PLOT_INTERVAL_YEARS = 1000
+MAX_ECLIPSE_GAP_DAYS = 400  # real eclipse gaps max ~6 months; larger checkpoint gaps mark unswept spans
 
 _stop_requested = False
 
@@ -64,14 +64,31 @@ def save_data_outputs(grid: GridSpec, state: RunState, output_dir: Path) -> None
 
 
 def save_image_output(grid: GridSpec, store: CheckpointStore, output_dir: Path, magnitude_threshold: float) -> None:
-    """Painting only shows where magnitude exceeds magnitude_threshold, same gate as days-until coverage tracking."""
+    """Color = area-equalized date of each point's last exposure; painting uses the same magnitude gate as coverage tracking."""
     import matplotlib.pyplot as plt
 
-    painted = (np.where(cp.magnitude > magnitude_threshold, cp.magnitude, 0.0) for cp in store)
-    accum_rgba = blend_events(painted, len(store), grid.lat_flat.size, plt.get_cmap("viridis"))
+    last_jd = np.full(grid.lat_flat.size, -np.inf)
+    for cp in store:
+        last_jd[cp.magnitude > magnitude_threshold] = cp.date.to_jd()
+    covered = np.sort(last_jd[np.isfinite(last_jd)])
+    denom = max(covered.size, 1)
+
+    layers = (
+        (
+            np.searchsorted(covered, cp.date.to_jd(), side="right") / denom,
+            np.where(cp.magnitude > magnitude_threshold, cp.magnitude, 0.0),
+        )
+        for cp in store
+    )
+    accum_rgba = blend_events(layers, grid.lat_flat.size, plt.get_cmap("viridis"))
     raster_rgba = to_raster_rgba(accum_rgba, grid)
+
+    quantile_dates = (
+        [AstroDate.from_jd(int(np.quantile(covered, q))) for q in (0.0, 0.25, 0.5, 0.75, 1.0)] if covered.size else []
+    )
+    date_range = (store.first_date, store.last_date) if store else None
     output_dir.mkdir(parents=True, exist_ok=True)
-    save_heatmap_png(raster_rgba, grid, output_dir / "days_until_next_eclipse.png", list(store.dates))
+    save_heatmap_png(raster_rgba, grid, output_dir / "days_until_next_eclipse.png", date_range, quantile_dates)
 
 
 def save_outputs(grid: GridSpec, state: RunState, store: CheckpointStore, output_dir: Path, magnitude_threshold: float) -> None:
@@ -85,6 +102,25 @@ def regenerate_analysis_plots(store: CheckpointStore, grid: GridSpec, output_dir
             module.generate(store, grid, output_dir / module.OUTPUT_FILENAME)
         except SystemExit as e:
             logger.warning("Skipped %s: %s", module.__name__.rsplit(".", 1)[-1], e)
+
+
+def search_spans(
+    dates: list[AstroDate], search_start: AstroDate, end_date: AstroDate | None
+) -> list[tuple[AstroDate, AstroDate | None]]:
+    """Spans not yet swept: checkpoint-index gaps plus the open tail, edges overlapping the bounding checkpoints."""
+    spans: list[tuple[AstroDate, AstroDate | None]] = []
+    if dates and search_start < dates[0]:
+        spans.append((search_start, dates[0]))
+    for prev, nxt in zip(dates, dates[1:]):
+        if nxt - prev <= MAX_ECLIPSE_GAP_DAYS or nxt < search_start:
+            continue
+        spans.append((max(prev.add_days(1), search_start), nxt))
+    tail_start = max(dates[-1].add_days(1), search_start) if dates else search_start
+    if end_date is None:
+        spans.append((tail_start, None))
+        return spans
+    spans.append((tail_start, end_date))
+    return [(s, min(e, end_date)) for s, e in spans if s <= end_date]
 
 
 def run(args: argparse.Namespace) -> None:
@@ -154,7 +190,10 @@ def run(args: argparse.Namespace) -> None:
             "every eclipse, until full coverage is reached or the run is stopped (Ctrl+C)."
         )
 
-    events_iter = iter_solar_eclipses(eph, ts, search_start, args.end_date)
+    spans = search_spans(store.dates, search_start, args.end_date)
+    if store:
+        log.info("Search spans after skipping swept stretches: %s", ", ".join(f"{s}..{e or 'open'}" for s, e in spans))
+    events_iter = chain.from_iterable(iter_solar_eclipses(eph, ts, s, e) for s, e in spans)
     if args.max_eclipses is not None:
         events_iter = islice(events_iter, args.max_eclipses)
 
@@ -181,7 +220,6 @@ def run(args: argparse.Namespace) -> None:
         progress.refresh()
 
     refresh_progress(f"{len(state.processed_dates)} eclipses")
-    last_analysis_plot_year = search_start.year
     try:
         for event in events_iter:
             if _stop_requested:
@@ -191,11 +229,6 @@ def run(args: argparse.Namespace) -> None:
             if known_covered.all() and not args.ignore_full_coverage:
                 stop_reason = "full global coverage reached"
                 break
-
-            if event.date.year - last_analysis_plot_year >= ANALYSIS_PLOT_INTERVAL_YEARS:
-                log.info("%d+ years since last analysis-plot run -- regenerating...", ANALYSIS_PLOT_INTERVAL_YEARS)
-                regenerate_analysis_plots(store, grid, args.output_dir)
-                last_analysis_plot_year = event.date.year
 
             if event.date in checkpointed_dates:
                 n_skipped += 1
@@ -259,4 +292,6 @@ def run(args: argparse.Namespace) -> None:
     )
 
     save_outputs(grid, state, store, args.output_dir, threshold)
+    log.info("Regenerating analysis plots (Ctrl+C again to skip and exit)...")
+    regenerate_analysis_plots(store, grid, args.output_dir)
     log.info("Done. Outputs written to %s", args.output_dir.resolve())

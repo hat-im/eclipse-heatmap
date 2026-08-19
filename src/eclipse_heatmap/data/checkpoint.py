@@ -1,12 +1,4 @@
-"""Per-event checkpoint files: enables exact resume (forward or backward in time) and non-hardcoded blending.
-
-Each processed eclipse stores its own compressed file, named by its own
-date (not insertion order), so extending a run backward in time merges
-correctly and writing stays O(1) per event. CheckpointStore keeps only
-the sorted date index in RAM and loads event data from disk one file at
-a time -- the full set decompresses to far more than physical memory,
-so it must never be materialized as a list.
-"""
+"""Per-event checkpoint files, one per eclipse, named by date; the full set exceeds RAM so access is always streamed."""
 
 from __future__ import annotations
 

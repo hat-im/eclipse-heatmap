@@ -13,28 +13,14 @@ from ..utils.astro_date import AstroDate
 logger = logging.getLogger("eclipse_heatmap.plots")
 
 
-def _date_ticks(processed_dates: list[AstroDate], n_ticks: int = 6) -> tuple[list[int], list[str]]:
-    n = len(processed_dates)
-    if n == 0:
-        return [], []
-    positions = sorted(set(np.linspace(1, n, num=min(n_ticks, n), dtype=int)))
-    labels = [f"{processed_dates[i - 1].year:04d}-{processed_dates[i - 1].month:02d}" for i in positions]
-    return positions, labels
-
-
 def save_heatmap_png(
     rgba_raster: np.ndarray,
     grid: GridSpec,
     path: Path,
-    processed_dates: list[AstroDate],
+    date_range: tuple[AstroDate, AstroDate] | None,
+    quantile_dates: list[AstroDate],
 ) -> None:
-    """Equal Earth-projection PNG from an already-blended (H, W, 4) RGBA raster.
-
-    Color is the Porter-Duff "over" composite of every eclipse touching each
-    point so far, so overlap shows as a genuine color mix. The color scale
-    spans exactly [1, len(processed_dates)] -- the true number of events
-    processed, not a guessed ceiling.
-    """
+    """Equal Earth PNG from a pre-blended RGBA raster; quantile_dates label the equal-area colorbar."""
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
     import matplotlib.pyplot as plt
@@ -58,22 +44,20 @@ def save_heatmap_png(
     ax.add_feature(cfeature.BORDERS, linewidth=0.3, edgecolor="dimgray")
     ax.gridlines(draw_labels=False, linewidth=0.3, color="gray", alpha=0.5, linestyle=":")
 
-    n_events = max(len(processed_dates), 1)
-    reference = ScalarMappable(norm=Normalize(vmin=1, vmax=n_events), cmap=plt.get_cmap("viridis"))
+    reference = ScalarMappable(norm=Normalize(vmin=0.0, vmax=1.0), cmap=plt.get_cmap("viridis"))
 
     fig.canvas.draw()
     map_pos = ax.get_position()
     cax = fig.add_axes([map_pos.x0, map_pos.y0 - 0.08, map_pos.width, 0.03])
     cbar = fig.colorbar(reference, cax=cax, orientation="horizontal")
-    positions, labels = _date_ticks(processed_dates)
-    if positions:
-        cbar.set_ticks(positions)
-        cbar.set_ticklabels(labels)
+    if quantile_dates:
+        cbar.set_ticks([0.0, 0.25, 0.5, 0.75, 1.0])
+        cbar.set_ticklabels([str(d) for d in quantile_dates])
     cbar.ax.tick_params(length=4)
-    cbar.set_label("Eclipse date")
+    cbar.set_label("Date of last eclipse exposure (equal-area color scale)")
 
-    if processed_dates:
-        title = f"Solar Eclipse Exposure ({processed_dates[0]} to {processed_dates[-1]})"
+    if date_range is not None:
+        title = f"Solar Eclipse Exposure ({date_range[0]} to {date_range[1]})"
     else:
         title = "Solar Eclipse Exposure"
     ax.set_title(title, fontsize=15, fontweight="bold", pad=12)

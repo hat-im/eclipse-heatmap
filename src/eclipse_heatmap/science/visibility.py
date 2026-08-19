@@ -1,34 +1,4 @@
-"""Per-grid-point eclipse visibility for one SolarEclipseEvent, swept across worker processes.
-
-Numerical approach (vectorized geocentric + parallax, not per-point ephemeris):
-1. Discretize the event's adaptive time window into time_step_seconds steps.
-2. At each step, compute the Sun's GEOCENTRIC apparent position once (one
-   ephemeris query -- light-time, aberration, deflection all included).
-   Solar altitude at every grid point is then the exact spherical-geometry
-   identity 90 - great_circle_distance(point, subsolar point); no per-point
-   ephemeris call needed for the day/night gate.
-3. Compute the Sun's and Moon's GEOCENTRIC apparent position vectors once
-   per step (two ephemeris queries total, not one per grid point). Each
-   point's TOPOCENTRIC vector to Sun/Moon is geocentric_vector minus that
-   point's own geocentric position (wgs84.latlon(...).at(t).position,
-   itself ephemeris-free -- pure geometry from Earth orientation data).
-   This is the standard parallax correction (observer offset << target
-   distance) and reproduces Skyfield's own per-point .observe() results
-   to within ~0.01 arcsecond -- negligible next to the ~30 arcsecond-scale
-   uncertainty already inherent in a 60-second time step. It replaces
-   O(points) expensive light-time-iterated ephemeris evaluations per step
-   with O(1), turning the dominant cost into cheap vectorized numpy.
-4. Classify geometry from the topocentric separation/angular radii, fold
-   into running per-point max magnitude and best type.
-
-Coarse time_step_seconds can miss brief totality/annularity at the edge
-of a path (lasts at most minutes at any point).
-
-VisibilityPool splits each eclipse's grid sweep across worker processes
-(points are independent within one sweep). Each worker loads its own
-ephemeris copy in a pool initializer -- Skyfield objects aren't picklable
-across the process boundary, so only plain floats/arrays cross it.
-"""
+"""Vectorized per-grid-point eclipse visibility: geocentric Sun/Moon per step + parallax correction, no per-point ephemeris."""
 
 from __future__ import annotations
 
@@ -38,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from skyfield.api import wgs84
+from skyfield.framelib import itrs
 
 from ..models.eclipse_type import EclipseType
 from ..utils.geo import haversine_deg
@@ -47,13 +18,10 @@ if TYPE_CHECKING:
     from skyfield.timelib import Time, Timescale
 
 
-def subsolar_point(eph, ts: "Timescale", t: "Time") -> tuple[float, float]:
+def subsolar_point(astro_sun, t: "Time") -> tuple[float, float]:
     """Geographic (lat, lon) directly beneath the Sun at time t: where hour angle = 0."""
-    earth, sun = eph["earth"], eph["sun"]
-    astro_sun = earth.at(t).observe(sun).apparent()
     ra, dec, _ = astro_sun.radec(epoch="date")
-    gast_hours = t.gast
-    lon = ((ra.hours - gast_hours) * 15.0 + 180.0) % 360.0 - 180.0
+    lon = ((ra.hours - t.gast) * 15.0 + 180.0) % 360.0 - 180.0
     return dec.degrees, lon
 
 
@@ -66,12 +34,7 @@ def compute_visibility_window(
     lon_grid: np.ndarray,
     time_step_seconds: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """(max_magnitude, best_type) per point in (lat_grid, lon_grid) over [t_start_tt, t_end_tt] TT.
-
-    Takes plain TT Julian-date floats rather than Skyfield Time objects
-    so it runs identically in the main process or a worker process
-    without pickling Skyfield objects across the process boundary.
-    """
+    """(max_magnitude, best_type) per point over [t_start_tt, t_end_tt] TT; plain floats so it pickles across workers."""
     earth, sun, moon = eph["earth"], eph["sun"], eph["moon"]
     n_points = lat_grid.size
 
@@ -85,10 +48,14 @@ def compute_visibility_window(
     n_steps = max(1, int(round((t_end_tt - t_start_tt) / step_days)) + 1)
     step_tts = np.linspace(t_start_tt, t_end_tt, n_steps)
 
+    ecef_km = wgs84.latlon(lat_grid, lon_grid).itrs_xyz.km  # fixed per point; rotated into GCRS once per step
+
     for step_tt in step_tts:
         t = ts.tt_jd(step_tt)
 
-        sub_lat, sub_lon = subsolar_point(eph, ts, t)
+        observer = earth.at(t)
+        astro_sun = observer.observe(sun).apparent()
+        sub_lat, sub_lon = subsolar_point(astro_sun, t)
 
         # Exact geocentric solar altitude: 90 - angular distance from the
         # subsolar point. Solar parallax (~8.8") is negligible here.
@@ -97,17 +64,11 @@ def compute_visibility_window(
         if day_idx.size == 0:
             continue
 
-        # Two ephemeris queries total (not one per point): geocentric
-        # apparent Sun/Moon vectors, already including light-time,
-        # aberration, and deflection.
-        astro_sun = earth.at(t).observe(sun).apparent()
-        astro_moon = earth.at(t).observe(moon).apparent()
+        astro_moon = observer.observe(moon).apparent()
         sun_vec_km = astro_sun.position.km
         moon_vec_km = astro_moon.position.km
 
-        # Per-point geocentric position: pure geometry (Earth orientation
-        # only), no ephemeris call, fully vectorized.
-        obs_vec_km = wgs84.latlon(lat_grid[day_idx], lon_grid[day_idx]).at(t).position.km
+        obs_vec_km = itrs.rotation_at(t).T @ ecef_km[:, day_idx]
 
         # Parallax correction: topocentric = geocentric - observer offset.
         topo_sun_km = sun_vec_km[:, None] - obs_vec_km
@@ -156,12 +117,7 @@ def _worker_task(
 
 
 class VisibilityPool:
-    """Persistent worker pool for parallel per-eclipse visibility sweeps.
-
-    Create once per run, after loading the ephemeris in the main process
-    (so worker init reads cached files instead of racing to download
-    them). Call compute() once per eclipse event, close() when done.
-    """
+    """Persistent worker pool for parallel per-eclipse visibility sweeps; create after the ephemeris is cached."""
 
     def __init__(self, n_workers: int, data_dir: str, ephemeris_filename: str):
         if n_workers < 1:
@@ -180,11 +136,7 @@ class VisibilityPool:
         lon_grid: np.ndarray,
         time_step_seconds: float,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Sweep (lat_grid, lon_grid) over [search_start_tt, search_end_tt] across workers.
-
-        Splits into up to n_workers contiguous chunks, dispatches one per
-        worker, concatenates results in original point order.
-        """
+        """Sweeps the grid across workers in contiguous chunks, concatenating results in point order."""
         n = lat_grid.size
         if n == 0:
             return np.zeros(0), np.zeros(0, dtype=np.int8)
