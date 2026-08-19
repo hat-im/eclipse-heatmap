@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..data.checkpoint import EventCheckpoint
+from ..data.checkpoint import CheckpointStore
 from ..models.grid import GridSpec
 from ..utils.geo import great_circle_km, to_unit_vectors
 
@@ -44,7 +44,7 @@ def path_length_km(lat_deg: np.ndarray, lon_deg: np.ndarray) -> float:
     return best
 
 
-def generate(checkpoints: list[EventCheckpoint], grid: GridSpec, output_png: Path) -> None:
+def generate(checkpoints: CheckpointStore, grid: GridSpec, output_png: Path) -> None:
     lengths = []
     dates = []
     for i, cp in enumerate(checkpoints):
@@ -71,7 +71,7 @@ def generate(checkpoints: list[EventCheckpoint], grid: GridSpec, output_png: Pat
     ax.set_xlabel("Path length (km, great-circle extent of totality footprint)")
     ax.set_ylabel("Number of total eclipses")
     ax.set_title(
-        f"Total Solar Eclipse Path Length Distribution ({checkpoints[0].date} to {checkpoints[-1].date})",
+        f"Total Solar Eclipse Path Length Distribution ({checkpoints.first_date} to {checkpoints.last_date})",
         fontsize=14,
         fontweight="bold",
     )

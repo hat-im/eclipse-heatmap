@@ -12,14 +12,14 @@ from pathlib import Path
 
 import numpy as np
 
-from ..data.checkpoint import EventCheckpoint
+from ..data.checkpoint import CheckpointStore
 from ..models.grid import GridSpec
 
 THRESHOLD = 1.0
 OUTPUT_FILENAME = "eclipse_lat_lon_distribution.png"
 
 
-def generate(checkpoints: list[EventCheckpoint], grid: GridSpec, output_png: Path) -> None:
+def generate(checkpoints: CheckpointStore, grid: GridSpec, output_png: Path) -> None:
     lat_hits: list[np.ndarray] = []
     lon_hits: list[np.ndarray] = []
     for cp in checkpoints:
@@ -54,7 +54,7 @@ def generate(checkpoints: list[EventCheckpoint], grid: GridSpec, output_png: Pat
     ax_lon.axvline(0, color="gray", linewidth=0.6, linestyle=":")
 
     fig.suptitle(
-        f"Total Solar Eclipse Path Coverage by Latitude/Longitude ({checkpoints[0].date} to {checkpoints[-1].date})",
+        f"Total Solar Eclipse Path Coverage by Latitude/Longitude ({checkpoints.first_date} to {checkpoints.last_date})",
         fontsize=14,
         fontweight="bold",
     )

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..data.checkpoint import EventCheckpoint
+from ..data.checkpoint import CheckpointStore
 from ..data.raster import to_raster
 from ..models.eclipse_type import EclipseType
 from ..models.grid import GridSpec
@@ -14,8 +14,8 @@ from ..models.grid import GridSpec
 OUTPUT_FILENAME = "total_eclipse_frequency.png"
 
 
-def generate(checkpoints: list[EventCheckpoint], grid: GridSpec, output_png: Path) -> None:
-    n_points = checkpoints[0].magnitude.size
+def generate(checkpoints: CheckpointStore, grid: GridSpec, output_png: Path) -> None:
+    n_points = grid.lat_flat.size
     count = np.zeros(n_points, dtype=np.int32)
     for cp in checkpoints:
         count += (cp.eclipse_type == EclipseType.TOTAL).astype(np.int32)
@@ -56,7 +56,7 @@ def generate(checkpoints: list[EventCheckpoint], grid: GridSpec, output_png: Pat
     cbar.set_label("Number of total solar eclipses")
 
     ax.set_title(
-        f"Total Solar Eclipse Frequency by Location ({checkpoints[0].date} to {checkpoints[-1].date})",
+        f"Total Solar Eclipse Frequency by Location ({checkpoints.first_date} to {checkpoints.last_date})",
         fontsize=15,
         fontweight="bold",
         pad=12,

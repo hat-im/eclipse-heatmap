@@ -11,15 +11,15 @@ from pathlib import Path
 
 import numpy as np
 
-from ..data.checkpoint import EventCheckpoint
+from ..data.checkpoint import CheckpointStore
 from ..models.eclipse_type import EclipseType
 from ..models.grid import GridSpec
 
 OUTPUT_FILENAME = "eclipse_count_distribution.png"
 
 
-def generate(checkpoints: list[EventCheckpoint], grid: GridSpec, output_png: Path) -> None:
-    n_points = checkpoints[0].magnitude.size
+def generate(checkpoints: CheckpointStore, grid: GridSpec, output_png: Path) -> None:
+    n_points = grid.lat_flat.size
     count = np.zeros(n_points, dtype=np.int32)
     for cp in checkpoints:
         count += (cp.eclipse_type == EclipseType.TOTAL).astype(np.int32)
@@ -36,7 +36,7 @@ def generate(checkpoints: list[EventCheckpoint], grid: GridSpec, output_png: Pat
     ax.set_ylabel("Number of grid points")
     ax.set_xticks(range(0, max_count + 1))
     ax.set_title(
-        f"Distribution of Total Eclipse Count per Location ({checkpoints[0].date} to {checkpoints[-1].date})",
+        f"Distribution of Total Eclipse Count per Location ({checkpoints.first_date} to {checkpoints.last_date})",
         fontsize=14,
         fontweight="bold",
     )

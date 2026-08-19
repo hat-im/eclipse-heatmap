@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Iterable
+
 import numpy as np
 
 from ..data.checkpoint import EventCheckpoint
@@ -17,7 +19,6 @@ class RunState:
         self.eclipse_type = np.zeros(n_points, dtype=np.int8)
         self.eclipse_magnitude = np.zeros(n_points, dtype=np.float64)
         self.eclipse_index = np.full(n_points, np.nan, dtype=np.float64)
-        self.magnitudes: list[np.ndarray] = []
         self.processed_dates: list = []
 
     def apply_event(
@@ -29,7 +30,6 @@ class RunState:
         days-until tracking -- the color/opacity blend always uses the
         raw magnitude, unaffected by this threshold.
         """
-        self.magnitudes.append(magnitude)
         self.processed_dates.append(event_date)
         event_index = len(self.processed_dates)
 
@@ -61,13 +61,7 @@ class CheckpointMerger:
     O(N) apply_event calls in total, same as before.
     """
 
-    def __init__(self, checkpoints: list[EventCheckpoint], n_points: int):
-        for cp in checkpoints:
-            if cp.magnitude.size != n_points:
-                raise ValueError(
-                    f"A checkpoint has {cp.magnitude.size} points but the current grid has {n_points} -- "
-                    "resolution/bounds must match to resume. Use --fresh to start over."
-                )
+    def __init__(self, checkpoints: Iterable[EventCheckpoint]):
         self._iter = iter(checkpoints)
         self._next = next(self._iter, None)
 

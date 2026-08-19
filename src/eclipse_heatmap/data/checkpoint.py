@@ -1,24 +1,19 @@
 """Per-event checkpoint files: enables exact resume (forward or backward in time) and non-hardcoded blending.
 
-Each processed eclipse stores its own small compressed file, named by the
-eclipse's own date (not insertion order). Loading sorts by filename, so
-checkpoints always come back in true chronological order no matter what
-order they were computed in -- extending a run backward in time (an
-earlier --start-date than any existing checkpoint) merges correctly
-without renumbering anything already on disk. Writing one is O(1) in the
-number of events already processed, so checkpointing an N-event run
-costs O(N) total, not O(N^2).
-
-Resuming replays the stored per-event data to reconstruct both the
-"first eclipse per point" tracking arrays and the color blend, so nothing
-about the expensive Skyfield visibility sweep needs to be redone for
-already-processed events.
+Each processed eclipse stores its own compressed file, named by its own
+date (not insertion order), so extending a run backward in time merges
+correctly and writing stays O(1) per event. CheckpointStore keeps only
+the sorted date index in RAM and loads event data from disk one file at
+a time -- the full set decompresses to far more than physical memory,
+so it must never be materialized as a list.
 """
 
 from __future__ import annotations
 
+from bisect import insort
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 import numpy as np
 
@@ -36,34 +31,47 @@ def _event_path(checkpoint_dir: Path, event_date: AstroDate) -> Path:
     return checkpoint_dir / f"{event_date.isoformat()}.npz"
 
 
-def save_event_checkpoint(
-    checkpoint_dir: Path,
-    event_date: AstroDate,
-    magnitude: np.ndarray,
-    eclipse_type: np.ndarray,
-) -> None:
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        _event_path(checkpoint_dir, event_date),
-        date=event_date.isoformat(),
-        magnitude=magnitude.astype(np.float32),
-        eclipse_type=eclipse_type.astype(np.int8),
-    )
+class CheckpointStore:
+    """Date-ordered lazy view over a checkpoint dir: holds only dates in RAM, loads event data per-file on demand."""
 
+    def __init__(self, checkpoint_dir: Path):
+        self._dir = checkpoint_dir
+        self._dates: list[AstroDate] = []
+        if checkpoint_dir.is_dir():
+            for path in checkpoint_dir.glob("*.npz"):
+                with np.load(path) as data:
+                    self._dates.append(AstroDate.parse(str(data["date"])))
+            self._dates.sort()
 
-def load_checkpoints(checkpoint_dir: Path) -> list[EventCheckpoint]:
-    """Loads every event checkpoint found, sorted by each event's own stored date (the source of truth, not the filename)."""
-    if not checkpoint_dir.is_dir():
-        return []
-    checkpoints = []
-    for path in checkpoint_dir.glob("*.npz"):
-        with np.load(path) as data:
-            checkpoints.append(
-                EventCheckpoint(
-                    date=AstroDate.parse(str(data["date"])),
-                    magnitude=data["magnitude"],
-                    eclipse_type=data["eclipse_type"],
-                )
-            )
-    checkpoints.sort(key=lambda cp: cp.date)
-    return checkpoints
+    def __len__(self) -> int:
+        return len(self._dates)
+
+    def __iter__(self) -> Iterator[EventCheckpoint]:
+        for date in list(self._dates):
+            yield self.load(date)
+
+    def load(self, date: AstroDate) -> EventCheckpoint:
+        with np.load(_event_path(self._dir, date)) as data:
+            return EventCheckpoint(date=date, magnitude=data["magnitude"], eclipse_type=data["eclipse_type"])
+
+    def save(self, date: AstroDate, magnitude: np.ndarray, eclipse_type: np.ndarray) -> None:
+        self._dir.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            _event_path(self._dir, date),
+            date=date.isoformat(),
+            magnitude=magnitude.astype(np.float32),
+            eclipse_type=eclipse_type.astype(np.int8),
+        )
+        insort(self._dates, date)
+
+    @property
+    def dates(self) -> list[AstroDate]:
+        return self._dates
+
+    @property
+    def first_date(self) -> AstroDate:
+        return self._dates[0]
+
+    @property
+    def last_date(self) -> AstroDate:
+        return self._dates[-1]

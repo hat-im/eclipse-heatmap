@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
-from ..data.checkpoint import load_checkpoints, save_event_checkpoint
+from ..data.checkpoint import CheckpointStore
 from ..data.raster import save_geotiff, save_numpy, to_raster, to_raster_rgba
 from ..data.table import build_results_dataframe, save_csv
 from ..models.eclipse_type import EclipseType
@@ -63,27 +63,26 @@ def save_data_outputs(grid: GridSpec, state: RunState, output_dir: Path) -> None
     save_csv(df, output_dir / "days_until_next_eclipse.csv")
 
 
-def save_image_output(grid: GridSpec, state: RunState, output_dir: Path, magnitude_threshold: float) -> None:
+def save_image_output(grid: GridSpec, store: CheckpointStore, output_dir: Path, magnitude_threshold: float) -> None:
     """Painting only shows where magnitude exceeds magnitude_threshold, same gate as days-until coverage tracking."""
     import matplotlib.pyplot as plt
 
-    painted_magnitudes = [np.where(m > magnitude_threshold, m, 0.0) for m in state.magnitudes]
-    accum_rgba = blend_events(painted_magnitudes, plt.get_cmap("viridis"))
+    painted = (np.where(cp.magnitude > magnitude_threshold, cp.magnitude, 0.0) for cp in store)
+    accum_rgba = blend_events(painted, len(store), grid.lat_flat.size, plt.get_cmap("viridis"))
     raster_rgba = to_raster_rgba(accum_rgba, grid)
     output_dir.mkdir(parents=True, exist_ok=True)
-    save_heatmap_png(raster_rgba, grid, output_dir / "days_until_next_eclipse.png", state.processed_dates)
+    save_heatmap_png(raster_rgba, grid, output_dir / "days_until_next_eclipse.png", list(store.dates))
 
 
-def save_outputs(grid: GridSpec, state: RunState, output_dir: Path, magnitude_threshold: float) -> None:
+def save_outputs(grid: GridSpec, state: RunState, store: CheckpointStore, output_dir: Path, magnitude_threshold: float) -> None:
     save_data_outputs(grid, state, output_dir)
-    save_image_output(grid, state, output_dir, magnitude_threshold)
+    save_image_output(grid, store, output_dir, magnitude_threshold)
 
 
-def regenerate_analysis_plots(checkpoint_dir: Path, grid: GridSpec, output_dir: Path) -> None:
-    checkpoints = load_checkpoints(checkpoint_dir)
+def regenerate_analysis_plots(store: CheckpointStore, grid: GridSpec, output_dir: Path) -> None:
     for module in ANALYSIS_PLOTS:
         try:
-            module.generate(checkpoints, grid, output_dir / module.OUTPUT_FILENAME)
+            module.generate(store, grid, output_dir / module.OUTPUT_FILENAME)
         except SystemExit as e:
             logger.warning("Skipped %s: %s", module.__name__.rsplit(".", 1)[-1], e)
 
@@ -109,33 +108,38 @@ def run(args: argparse.Namespace) -> None:
         shutil.rmtree(checkpoint_dir)
 
     threshold = args.magnitude_threshold
-    checkpoints = load_checkpoints(checkpoint_dir)
-    checkpointed_dates = {cp.date for cp in checkpoints}
+    store = CheckpointStore(checkpoint_dir)
+    checkpointed_dates = set(store.dates)
     state = RunState(n_points)
-    merger = CheckpointMerger(checkpoints, n_points)
+    merger = CheckpointMerger(store)
 
     # Order-independent union of all coverage, for progress/stop-condition only;
     # state.assigned fills in lazily by true date order via merger and can lag behind this.
     known_covered = np.zeros(n_points, dtype=bool)
-    for cp in checkpoints:
+    for cp in store:
+        if cp.magnitude.size != n_points:
+            raise ValueError(
+                f"Checkpoint {cp.date} has {cp.magnitude.size} points but the current grid has {n_points} -- "
+                "resolution/bounds must match to resume. Use --fresh to start over."
+            )
         known_covered |= cp.magnitude > threshold
 
     if args.start_date is not None:
         search_start = args.start_date
-    elif checkpoints:
-        search_start = checkpoints[-1].date.add_days(1)
+    elif store:
+        search_start = store.last_date.add_days(1)
     else:
         search_start = today
 
     merger.apply_up_to(state, today, threshold, search_start)
 
-    if checkpoints:
-        extending_backward = search_start <= checkpoints[0].date
+    if store:
+        extending_backward = search_start <= store.first_date
         log.info(
             "Found %d existing checkpoint(s) spanning %s to %s (%d/%d points covered). Searching from %s%s.",
-            len(checkpoints),
-            checkpoints[0].date,
-            checkpoints[-1].date,
+            len(store),
+            store.first_date,
+            store.last_date,
             int(known_covered.sum()),
             n_points,
             search_start,
@@ -190,7 +194,7 @@ def run(args: argparse.Namespace) -> None:
 
             if event.date.year - last_analysis_plot_year >= ANALYSIS_PLOT_INTERVAL_YEARS:
                 log.info("%d+ years since last analysis-plot run -- regenerating...", ANALYSIS_PLOT_INTERVAL_YEARS)
-                regenerate_analysis_plots(checkpoint_dir, grid, args.output_dir)
+                regenerate_analysis_plots(store, grid, args.output_dir)
                 last_analysis_plot_year = event.date.year
 
             if event.date in checkpointed_dates:
@@ -206,7 +210,7 @@ def run(args: argparse.Namespace) -> None:
             )
             n_new_events += 1
 
-            save_event_checkpoint(checkpoint_dir, event.date, magnitude, eclipse_type)
+            store.save(event.date, magnitude, eclipse_type)
             checkpointed_dates.add(event.date)
             n_newly_assigned = state.apply_event(today, event.date, magnitude, eclipse_type, threshold)
             prev_covered = int(known_covered.sum())
@@ -227,7 +231,7 @@ def run(args: argparse.Namespace) -> None:
                 save_data_outputs(grid, state, args.output_dir)
                 if n_newly_covered > 0:
                     log.info("Repainting outputs...")
-                    save_image_output(grid, state, args.output_dir, threshold)
+                    save_image_output(grid, store, args.output_dir, threshold)
         else:
             stop_reason = f"reached search end date {args.end_date}"
     except ValueError as e:
@@ -254,5 +258,5 @@ def run(args: argparse.Namespace) -> None:
         n_unassigned,
     )
 
-    save_outputs(grid, state, args.output_dir, threshold)
+    save_outputs(grid, state, store, args.output_dir, threshold)
     log.info("Done. Outputs written to %s", args.output_dir.resolve())

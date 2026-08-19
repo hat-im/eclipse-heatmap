@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..data.checkpoint import EventCheckpoint
+from ..data.checkpoint import CheckpointStore
 from ..data.raster import to_raster
 from ..models.grid import GridSpec
 
@@ -25,8 +25,8 @@ DAYS_PER_YEAR = 365.25
 OUTPUT_FILENAME = "eclipse_interval_heatmap.png"
 
 
-def generate(checkpoints: list[EventCheckpoint], grid: GridSpec, output_png: Path) -> None:
-    n_points = checkpoints[0].magnitude.size
+def generate(checkpoints: CheckpointStore, grid: GridSpec, output_png: Path) -> None:
+    n_points = grid.lat_flat.size
     last_hit_ordinal = np.full(n_points, -1, dtype=np.int64)
     sum_gap_days = np.zeros(n_points, dtype=np.float64)
     gap_count = np.zeros(n_points, dtype=np.int64)
@@ -89,7 +89,7 @@ def generate(checkpoints: list[EventCheckpoint], grid: GridSpec, output_png: Pat
     cbar.set_label("Average years between total solar eclipses (grey = fewer than 2 ever recorded)")
 
     ax.set_title(
-        f"Average Time Between Total Solar Eclipses ({checkpoints[0].date} to {checkpoints[-1].date})",
+        f"Average Time Between Total Solar Eclipses ({checkpoints.first_date} to {checkpoints.last_date})",
         fontsize=15,
         fontweight="bold",
         pad=12,

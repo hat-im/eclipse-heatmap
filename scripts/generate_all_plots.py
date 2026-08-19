@@ -1,8 +1,8 @@
-"""Runs the checkpoint-data analysis plots (see eclipse_heatmap.plots) in one pass: loads checkpoints/grid once, reuses them for every plot.
+"""Runs the checkpoint-data analysis plots (see eclipse_heatmap.plots), streaming checkpoints from disk per plot.
 
-Loading checkpoints once instead of once per plot matters once there are
-thousands of them. Safe to run alongside a live main.py process still
-writing new checkpoints (read-only).
+Each plot streams the checkpoint files one at a time, so memory stays flat
+no matter how many thousands there are. Safe to run alongside a live
+main.py process still writing new checkpoints (read-only).
 
 Usage: python scripts/generate_all_plots.py [checkpoint_dir] [output_dir] [--only NAME [NAME ...]]
 """
@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from eclipse_heatmap.data.checkpoint import load_checkpoints
+from eclipse_heatmap.data.checkpoint import CheckpointStore
 from eclipse_heatmap.models.grid import generate_grid
 from eclipse_heatmap.plots.registry import ANALYSIS_PLOTS
 
@@ -41,12 +41,12 @@ def main() -> None:
             raise SystemExit(f"Unknown plot(s): {sorted(unknown)}. Available: {sorted(by_name)}")
         plots = [by_name[name] for name in args.only]
 
-    checkpoints = load_checkpoints(args.checkpoint_dir)
+    checkpoints = CheckpointStore(args.checkpoint_dir)
     if not checkpoints:
         raise SystemExit(f"No checkpoints found at {args.checkpoint_dir}")
-    print(f"Loaded {len(checkpoints)} checkpoints spanning {checkpoints[0].date} to {checkpoints[-1].date}")
+    print(f"Found {len(checkpoints)} checkpoints spanning {checkpoints.first_date} to {checkpoints.last_date}")
 
-    n_points = checkpoints[0].magnitude.size
+    n_points = checkpoints.load(checkpoints.first_date).magnitude.size
     grid = generate_grid(0.25)
     if grid.lat_flat.size != n_points:
         raise SystemExit(f"Checkpoint grid has {n_points} points but the default 0.25 deg grid has {grid.lat_flat.size}")
